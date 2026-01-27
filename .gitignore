@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Data (Large files and partitions)
+core/dataset/cic-iot23.csv
+core/dataset/*.zip
+core/data_split/*.pt
+
+# Results (Logs, models, and plots)
+results/
+*.pth
+*.png
+training result1.txt
+
+# Junk/Old files
+rac/
+eda.py
+test.py
+train_local.py
+
+# IDEs
+.vscode/
+.idea/
