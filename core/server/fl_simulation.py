@@ -4,29 +4,33 @@ import copy
 import os
 import sys
 
-# Thêm các folder con vào sys.path để có thể import chéo
+# Path setup
 current_dir = os.path.dirname(os.path.abspath(__file__))
 core_dir = os.path.dirname(current_dir)
 sys.path.append(core_dir)
 sys.path.append(os.path.join(core_dir, "model"))
 sys.path.append(os.path.join(core_dir, "client"))
+sys.path.append(os.path.join(core_dir, "federated"))
 
+# Project imports
 from model import IDS_MLP
 from client_app import LocalClient
-from dataset_preprocessor import load_and_preprocess_ciciot
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+
+# Federated Learning modules
+from module import create_strategy, evaluate_model, format_metrics
 
 from concurrent.futures import ProcessPoolExecutor
 
 # --- CẤU HÌNH ---
 NUM_CLIENTS = 5
-NUM_ROUNDS = 50  # Giảm xuống 30 rounds như yêu cầu
+NUM_ROUNDS = 50  
 LOCAL_EPOCHS = 1 # Giảm xuống 1 epoch để train nhanh hơn
 BATCH_SIZE = 128 # Tăng Batch Size lên 128
 LEARNING_RATE = 0.001
 DEVICE = torch.device("cpu") # Trên i7-1255U dùng CPU có Multiprocessing sẽ nhanh hơn GPU nếu tập dữ liệu không quá lớn
-GLOBAL_DATA_FILE = "d:/FL/core/dataset/cic-iot23.csv"
+GLOBAL_TEST_FILE = "global_test_data.pt"  # Pre-split test set (30%)
 
 # --- FL ALGORITHM CONFIG ---
 # FED_ALGO = 'FedProx' 
@@ -51,61 +55,10 @@ def client_train_worker(client_id, data_path, global_weights, current_lr):
     loss, acc = client.evaluate()
     return client_id, weights, samples, loss, acc
 
-# ... (các hàm aggregation và evaluate giữ nguyên) ...
-
-def fedprox_aggregation(client_weights, client_samples):
-    """
-    FedProx uses the same aggregation as FedAvg on the server side.
-    The difference is in the client-side loss function.
-    """
-    return federated_averaging(client_weights, client_samples)
-
-def federated_averaging(client_weights, client_samples):
-    """
-    Standard FedAvg implementation.
-    Weighted average of client parameters.
-    """
-    total_samples = sum(client_samples)
-    global_weights = copy.deepcopy(client_weights[0])
-    
-    # Initialize global weights to zero
-    for key in global_weights.keys():
-        global_weights[key] = torch.zeros_like(global_weights[key])
-        
-    # Aggregate (nen tach module ra, submodule ra de xu ly tung phan rieng biet)
-    for i in range(len(client_weights)):
-        weight = client_samples[i] / total_samples
-        for key in global_weights.keys():
-            if torch.is_floating_point(client_weights[i][key]):
-                global_weights[key] += client_weights[i][key] * weight
-            else:
-                if i == 0:
-                    global_weights[key] = client_weights[i][key]
-                else:
-                    global_weights[key] = torch.max(global_weights[key], client_weights[i][key])
-            
-    return global_weights
-
-def evaluate_global_model(model, test_loader, device):
-    model.eval()
-    correct = 0
-    total = 0
-    criterion = nn.CrossEntropyLoss()
-    total_loss = 0.0
-    
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            total_loss += loss.item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            
-    accuracy = 100 * correct / total if total > 0 else 0
-    avg_loss = total_loss / len(test_loader) if len(test_loader) > 0 else 0
-    return avg_loss, accuracy
+# ========================================
+# Aggregation and Evaluation
+# Now using federated modules!
+# ========================================
 
 def save_training_plots(run_dir, accuracies, losses):
     """
@@ -159,13 +112,22 @@ class Logger(object):
         if self.log:
             self.log.close()
 
-def get_next_run_dir(base_dir="d:/FL/results"):
+def get_next_run_dir(base_dir="c:/FederatedLearning/core/results"):
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
-    i = 1
-    while os.path.exists(os.path.join(base_dir, f"result_{i}")):
-        i += 1
-    run_dir = os.path.join(base_dir, f"result_{i}")
+    
+    # Tạo tên folder theo ngày giờ: DD-MM-YYYY_HH-MM-SS
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    run_dir = os.path.join(base_dir, timestamp)
+    
+    # Nếu trùng tên (chạy trong cùng 1 giây), thêm suffix   
+    if os.path.exists(run_dir):
+        i = 1
+        while os.path.exists(f"{run_dir}_{i}"):
+            i += 1
+        run_dir = f"{run_dir}_{i}"
+    
     os.makedirs(run_dir)
     return run_dir
 
@@ -182,12 +144,14 @@ def main():
         print(f"--- TRAINING SESSION: {os.path.basename(run_dir)} ---")
         print(f"Multiprocessing enabled for performance optimization.")
     
-        # 1. Prepare Global Test Set
-        print("Loading global test data...")
-        X, y = load_and_preprocess_ciciot(GLOBAL_DATA_FILE)
-        test_indices = torch.randperm(len(X))[:10000] # Giảm nhẹ số lượng test để nhanh hơn nữa
-        test_data = TensorDataset(torch.from_numpy(X[test_indices]), torch.from_numpy(y[test_indices]))
+        # 1. Load Pre-split Global Test Set (tránh Data Leakage)
+        print("Loading pre-split global test data...")
+        test_data_path = os.path.join(core_dir, "data_split", GLOBAL_TEST_FILE)
+        X_test, y_test = torch.load(test_data_path)
+        test_data = TensorDataset(X_test, y_test)
         test_loader = DataLoader(test_data, batch_size=BATCH_SIZE)
+        print(f"→ Loaded {len(X_test)} test samples (30% of total data)")
+        print(f"→ Features: {X_test.shape[1]}")
 
         # 2. Initialize Global Model
         global_model = IDS_MLP().to(DEVICE)
@@ -200,8 +164,14 @@ def main():
             d_path = os.path.join(data_dir, f"client_{i}_data.pt")
             client_tasks.append((i, d_path))
 
-        # 4. Federated Training Loop
+        # 4. Initialize FL Strategy
         print(f"\n--- BẮT ĐẦU TRAINING FEDERATED (Algo: {FED_ALGO}) ---")
+        if FED_ALGO == 'FedProx':
+            strategy = create_strategy('FedProx', mu=PROXIMAL_MU)
+        else:
+            strategy = create_strategy('FedAvg')
+        print(f"→ Strategy: {strategy.name}")
+        
         current_lr = LEARNING_RATE
         
         history_acc = []
@@ -227,20 +197,18 @@ def main():
                     print(f"  Client {cid} finished | Acc: {acc:.2f}% | Loss: {loss:.4f}")
                     round_weights.append(weights)
                     round_samples.append(samples)
-                
-            # Global Aggregation
-            if FED_ALGO == 'FedProx':
-                global_weights = fedprox_aggregation(round_weights, round_samples)
-            else:
-                global_weights = federated_averaging(round_weights, round_samples)
-                
+            
+            # Global Aggregation using strategy
+            global_weights = strategy.aggregate(round_weights, round_samples)
             global_model.load_state_dict(global_weights)
             
-            global_loss, global_acc = evaluate_global_model(global_model, test_loader, DEVICE)
-            print(f"Global Model Round {round_idx + 1} | Accuracy: {global_acc:.2f}% | Loss: {global_loss:.4f}")
+            # Evaluate with detailed metrics (verbose on last round)
+            verbose = (round_idx == NUM_ROUNDS - 1)
+            metrics = evaluate_model(global_model, test_loader, DEVICE, verbose=verbose)
+            print(f"Global Model Round {round_idx + 1} | {format_metrics(metrics)}")
             
-            history_acc.append(global_acc)
-            history_loss.append(global_loss)
+            history_acc.append(metrics['accuracy'])
+            history_loss.append(metrics['loss'])
 
         # 5. Save Final Model to the run directory
         model_path = os.path.join(run_dir, "model.pth")
@@ -256,3 +224,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

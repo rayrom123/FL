@@ -54,7 +54,7 @@ def save_plots(run_dir, accuracies, losses):
     print(f"-> Created plot: {plot_path}")
 
 def main():
-    results_dir = "d:/FL/results"
+    results_dir = "c:/FederatedLearning/core/results"
     if not os.path.exists(results_dir):
         print("Results directory not found.")
         return

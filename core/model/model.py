@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class IDS_MLP(nn.Module):
-    def __init__(self, input_dim=45, num_classes=34): 
+    def __init__(self, input_dim=31, num_classes=34): 
         """
-        input_dim: 45 (Theo output dataset của bạn)
+        input_dim: 31 (Sau feature engineering từ 46 features ban đầu)
         num_classes: 34 (Số lượng nhãn tấn công max ID là 33 + 1)
         """
         super(IDS_MLP, self).__init__()
